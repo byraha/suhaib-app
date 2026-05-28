@@ -3,13 +3,12 @@ import type { Product } from '../types'
 
 export async function scrapeFlipkart(page: Page, query: string): Promise<Product[]> {
   const url = `https://www.flipkart.com/search?q=${encodeURIComponent(query)}`
-  console.log(`[flipkart] navigating to ${url}`)
 
   try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 })
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 15000 })
     await page.waitForSelector('div[data-id]', { timeout: 10000 })
   } catch (e) {
-    console.warn(`[flipkart] timeout/error:`, e)
+    console.warn(`[flipkart] timeout:`, e)
     return []
   }
 
@@ -18,13 +17,13 @@ export async function scrapeFlipkart(page: Page, query: string): Promise<Product
       const imgEl = card.querySelector('img.UCc1lI')
       const title = imgEl?.getAttribute('alt') || ''
 
-      const priceEl = card.querySelector('.oFEPlD')
+      const priceEl = card.querySelector('.oFEPlD') || card.querySelector('.Nx9bqj') || card.querySelector('._30jeq3')
       const priceText = priceEl?.textContent?.trim() || ''
       const priceMatch = priceText.match(/₹([\d,]+)/)
       const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : 0
 
-      const allSpans = card.querySelectorAll('span')
       let rating: number | null = null
+      const allSpans = card.querySelectorAll('span')
       allSpans.forEach((s) => {
         const t = s.textContent?.trim() || ''
         if (t.match(/^[\d.]+$/) && !t.includes(' ')) {

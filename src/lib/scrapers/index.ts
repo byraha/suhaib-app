@@ -1,4 +1,4 @@
-import { chromium, type Browser, type Page } from 'playwright'
+import { chromium, type Browser, type Page, type BrowserContext } from 'playwright'
 import type { Product, SearchError, SearchResponse } from '../types'
 import { scrapeAmazon } from './amazon'
 import { scrapeFlipkart } from './flipkart'
@@ -8,29 +8,58 @@ import { scrapeZepto } from './zepto'
 
 let browser: Browser | null = null
 
+const USER_AGENTS = [
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+]
+
+function randomUA(): string {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)]
+}
+
 async function getBrowser(): Promise<Browser> {
   if (!browser) {
     console.log('[scraper] launching browser...')
     browser = await chromium.launch({
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+      ],
     })
     console.log('[scraper] browser launched')
   }
   return browser
 }
 
-async function debugPage(page: Page, label: string): Promise<void> {
-  try {
-    const title = await page.title()
-    const url = page.url()
-    console.log(`[debug][${label}] title="${title}" url="${url}"`)
-    const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 300) || 'no body')
-    console.log(`[debug][${label}] body preview: ${bodyText.replace(/\n/g, ' ').substring(0, 200)}`)
-    await page.screenshot({ path: `/tmp/debug-${label}.png`, fullPage: false }).catch(() => {})
-  } catch (e) {
-    console.log(`[debug][${label}] error:`, e)
-  }
+async function createPage(browserInstance: Browser): Promise<{ context: BrowserContext; page: Page }> {
+  const context = await browserInstance.newContext({
+    userAgent: randomUA(),
+    viewport: { width: 1920, height: 1080 },
+    locale: 'en-IN',
+    timezoneId: 'Asia/Kolkata',
+    geolocation: { latitude: 12.9716, longitude: 77.5946 },
+    permissions: ['geolocation'],
+  })
+
+  const page = await context.newPage()
+
+  await page.route('**/*.{png,jpg,jpeg,gif,svg,ico,webp,avif,woff,woff2,ttf,eot,otf}', (route) => route.abort())
+  await page.route('**/analytics/**', (route) => route.abort())
+  await page.route('**/track/**', (route) => route.abort())
+  await page.route('**/collect', (route) => route.abort())
+
+  await page.setExtraHTTPHeaders({
+    'Accept-Language': 'en-IN,en;q=0.9,hi;q=0.8',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+  })
+
+  return { context, page }
 }
 
 type ScraperFn = (page: Page, query: string) => Promise<Product[]>
@@ -55,20 +84,13 @@ export async function searchProducts(query: string): Promise<SearchResponse> {
 
   const results = await Promise.allSettled(
     scrapers.map(async (scraper) => {
-      const context = await browserInstance.newContext({
-        userAgent:
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        viewport: { width: 1920, height: 1080 },
-      })
-      const page = await context.newPage()
-
+      const { context, page } = await createPage(browserInstance)
       try {
         console.log(`[scraper] starting ${scraper.name} for "${query}"`)
         const products = await scraper.fn(page, query)
         console.log(`[scraper] ${scraper.name} returned ${products.length} products`)
         allProducts.push(...products)
       } catch (err) {
-        await debugPage(page, scraper.name)
         const msg = err instanceof Error ? err.message : String(err)
         console.log(`[scraper] ${scraper.name} error: ${msg}`)
         errors.push({ source: scraper.name, error: msg })

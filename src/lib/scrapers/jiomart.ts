@@ -1,45 +1,45 @@
 import type { Page } from 'playwright'
 import type { Product } from '../types'
 
+const PINCODE = '560001'
+
 export async function scrapeJiomart(page: Page, query: string): Promise<Product[]> {
   const url = `https://www.jiomart.com/search/${encodeURIComponent(query)}`
-  console.log(`[jiomart] navigating to ${url}`)
 
   try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 })
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    await page.waitForTimeout(3000)
 
-    const locationBtns = [
-      'a:has-text("Select Location Manually")',
-      'button:has-text("Select Location")',
-      'a:has-text("Change")',
-      '[class*="location"] a',
-      '[class*="Location"] a',
-    ]
-    for (const sel of locationBtns) {
-      try {
-        const btn = await page.$(sel)
-        if (btn) {
-          await btn.click()
-          await page.waitForTimeout(1000)
-          const pincodeInput = await page.$('input[type="text"], input[placeholder*="pincode"], input[placeholder*="Pincode"], input[placeholder*="PIN"]')
-          if (pincodeInput) {
-            await pincodeInput.fill('560001')
-            await page.keyboard.press('Enter')
-            await page.waitForTimeout(2000)
-          }
-          break
-        }
-      } catch { continue }
+    const mode = await page.evaluate(() => {
+      return document.body?.innerText?.includes('Enter pin code') || document.body?.innerText?.includes('Select Location') ? 'location' : 'results'
+    })
+
+    if (mode === 'location') {
+      console.log(`[jiomart] location prompt detected, trying to set pincode`)
+      const manualBtn = await page.$('a:has-text("Select Location Manually"), button:has-text("Select Location"), [class*="manual"], [class*="Manual"]')
+      if (manualBtn) {
+        await manualBtn.click().catch(() => {})
+        await page.waitForTimeout(2000)
+      }
+
+      const input = await page.$('input[type="text"], input[placeholder*="pin" i], input[placeholder*="code" i], input[placeholder*="PIN"]')
+      if (input) {
+        await input.fill(PINCODE)
+        await page.waitForTimeout(500)
+        await page.keyboard.press('Enter')
+        await page.waitForTimeout(3000)
+      }
     }
 
     await page.waitForTimeout(2000)
 
     const selectors = [
       'div.plp-card',
-      'div.product-grid-item',
-      'div[class*="product"]',
       'li.product-item',
+      'div[class*="product"]',
       'div[class*="Product"]',
+      'div.product-grid-item',
+      'div[class*="card"]',
     ]
 
     let found = false
@@ -51,23 +51,20 @@ export async function scrapeJiomart(page: Page, query: string): Promise<Product[
     }
 
     if (!found) {
-      console.warn(`[jiomart] no product containers found`)
+      const bodyText = await page.evaluate(() => document.body?.innerText?.substring(0, 200) || '')
+      console.log(`[jiomart] no products found. body: ${bodyText.replace(/\n/g, ' ').substring(0, 150)}`)
       return []
     }
 
-    const combinedSelector = selectors.join(', ')
-    const products = await page.$$eval(combinedSelector, (cards) => {
+    const products = await page.$$eval(selectors.join(', '), (cards) => {
       return cards.slice(0, 5).map((card) => {
-        const titleEl =
-          card.querySelector('[class*="name"]') ||
-          card.querySelector('[class*="title"]') ||
-          card.querySelector('[class*="Name"]') ||
-          card.querySelector('a')
+        const titleEl = card.querySelector('[class*="name"]') || card.querySelector('[class*="title"]') || card.querySelector('a')
         const title = titleEl?.textContent?.trim() || ''
 
         const priceEl = card.querySelector('[class*="price"]') || card.querySelector('[class*="Price"]')
         const priceText = priceEl?.textContent?.trim() || ''
-        const price = parseFloat(priceText.replace(/[^0-9.]/g, '')) || 0
+        const priceMatch = priceText.match(/₹([\d,]+)/)
+        const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : 0
 
         const imgEl = card.querySelector('img')
         const image = imgEl?.getAttribute('src') || ''

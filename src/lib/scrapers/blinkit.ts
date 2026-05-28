@@ -1,29 +1,36 @@
 import type { Page } from 'playwright'
 import type { Product } from '../types'
 
+const PINCODE = '560001'
+
 export async function scrapeBlinkit(page: Page, query: string): Promise<Product[]> {
   const url = `https://blinkit.com/s/${encodeURIComponent(query)}`
-  console.log(`[blinkit] navigating to ${url}`)
 
   try {
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 20000 })
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 15000 })
+    await page.waitForTimeout(3000)
 
-    const locationBtns = [
-      'button:has-text("Detect my location")',
-      'button:has-text("Allow")',
-      '[class*="location"] button',
-      'button:has-text("Select Location")',
-    ]
+    const needsLocation = await page.evaluate(() => {
+      const text = document.body?.innerText || ''
+      return text.includes('Select Location') || text.includes('delivery location') || text.includes('Detect my location')
+    })
 
-    for (const sel of locationBtns) {
-      try {
-        const btn = await page.$(sel)
-        if (btn && await btn.isVisible()) {
-          await btn.click().catch(() => {})
-          await page.waitForTimeout(2000)
-          break
-        }
-      } catch { continue }
+    if (needsLocation) {
+      console.log(`[blinkit] location prompt detected, trying to set pincode`)
+
+      const detectBtn = await page.$('button:has-text("Detect my location"), button:has-text("Select Location")')
+      if (detectBtn) {
+        await detectBtn.click().catch(() => {})
+        await page.waitForTimeout(3000)
+      }
+
+      const input = await page.$('input[type="text"]')
+      if (input) {
+        await input.fill(PINCODE)
+        await page.waitForTimeout(500)
+        await page.keyboard.press('Enter')
+        await page.waitForTimeout(3000)
+      }
     }
 
     await page.waitForTimeout(2000)
@@ -45,22 +52,19 @@ export async function scrapeBlinkit(page: Page, query: string): Promise<Product[
     }
 
     if (!found) {
-      console.warn(`[blinkit] no product containers found`)
+      console.log(`[blinkit] no products found (likely still at location prompt)`)
       return []
     }
 
-    const combinedSelector = selectors.join(', ')
-    const products = await page.$$eval(combinedSelector, (cards) => {
+    const products = await page.$$eval(selectors.join(', '), (cards) => {
       return cards.slice(0, 5).map((card) => {
-        const titleEl =
-          card.querySelector('[class*="title"]') ||
-          card.querySelector('[class*="name"]') ||
-          card.querySelector('[class*="Title"]')
+        const titleEl = card.querySelector('[class*="title"]') || card.querySelector('[class*="name"]') || card.querySelector('[class*="Title"]')
         const title = titleEl?.textContent?.trim() || ''
 
         const priceEl = card.querySelector('[class*="price"]') || card.querySelector('[class*="Price"]')
         const priceText = priceEl?.textContent?.trim() || ''
-        const price = parseFloat(priceText.replace(/[^0-9.]/g, '')) || 0
+        const priceMatch = priceText.match(/₹([\d,]+)/)
+        const price = priceMatch ? parseFloat(priceMatch[1].replace(/,/g, '')) : 0
 
         const imgEl = card.querySelector('img')
         const image = imgEl?.getAttribute('src') || ''
